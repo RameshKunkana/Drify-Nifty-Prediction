@@ -356,7 +356,9 @@ def _epsilon_for_n_segments(closes, target):
 _closes  = _market_data["close"].values.astype(float)
 _ts_mkt  = _market_data["timestamp"].values
 _eps     = _epsilon_for_n_segments(_closes, n_segments)
-_rdp_idx = _rdp_vertical(_closes, _eps)
+_rdp_idx   = _rdp_vertical(_closes, _eps)
+_highs_mkt = _market_data["high"].values.astype(float)
+_lows_mkt  = _market_data["low"].values.astype(float)
 
 fig.add_trace(go.Scatter(
     x=_ts_mkt[_rdp_idx],
@@ -444,10 +446,10 @@ if _er_rows:
 
 st.plotly_chart(fig, width="stretch")
 
-# ── Method Comparison ──────────────────────────────────────────────────────────
+# ── Tabs: Model Comparison + Segment Features ──────────────────────────────────
 
 st.divider()
-st.subheader("Method Comparison  (same day, same slider)")
+_tab1, _tab2, _tab3 = st.tabs(["📊 Model Comparison", "📐 Segment Features", "🏆 Model Backtest"])
 
 def _comp_chart(title, path_x, path_y, color):
     cf = go.Figure(go.Candlestick(
@@ -501,7 +503,7 @@ _methods = []
 
 # ── 0. RDP (current model) ──
 _methods.append(("0. RDP  (current model)", True,
-                 _ts_mkt[_rdp_idx], _closes[_rdp_idx], "#f0c040"))
+                 _ts_mkt[_rdp_idx], _closes[_rdp_idx], "#f0c040", list(_rdp_idx)))
 
 # ── 1. Ruptures — Binseg linear ──
 try:
@@ -510,10 +512,10 @@ try:
     _bkps = rpt.Binseg(model="linear").fit(_sig).predict(n_bkps=min(n_segments - 1, len(_closes) - 2))
     _m1i  = sorted(set([0] + [b - 1 for b in _bkps]))
     _methods.append(("1. Ruptures  (Binseg · linear)", True,
-                     _ts_mkt[_m1i], _closes[_m1i], "#64b5f6"))
+                     _ts_mkt[_m1i], _closes[_m1i], "#64b5f6", list(_m1i)))
 except ImportError:
     _methods.append(("1. Ruptures  (Binseg · linear)", False,
-                     None, None, "pip install ruptures"))
+                     None, None, "pip install ruptures", None))
 
 # ── 2. ZigZag + ATR ──
 try:
@@ -536,9 +538,9 @@ try:
 
     _m2i = _zigzag_idx(_closes, n_segments)
     _methods.append(("2. ZigZag + ATR", True,
-                     _ts_mkt[_m2i], _closes[_m2i], "#ba68c8"))
+                     _ts_mkt[_m2i], _closes[_m2i], "#ba68c8", list(_m2i)))
 except Exception as e:
-    _methods.append(("2. ZigZag + ATR", False, None, None, str(e)))
+    _methods.append(("2. ZigZag + ATR", False, None, None, str(e), None))
 
 # ── 3. Directional Change (DC) ──
 def _dc_run(closes, theta):
@@ -576,7 +578,7 @@ def _dc_idx(closes, target):
 
 _m3i = _dc_idx(_closes, n_segments)
 _methods.append(("3. Directional Change (DC)", True,
-                 _ts_mkt[_m3i], _closes[_m3i], "#ff8a65"))
+                 _ts_mkt[_m3i], _closes[_m3i], "#ff8a65", list(_m3i)))
 
 # ── 4. L1 Trend Filter ──
 try:
@@ -589,7 +591,7 @@ try:
         for _ in range(20):
             lam  = (lo + hi) / 2
             prob = cp.Problem(cp.Minimize(cp.sum_squares(closes - xv) + lam * cp.norm1(cp.diff(xv, 2))))
-            prob.solve(solver=cp.OSQP, verbose=False)
+            prob.solve(solver=cp.CLARABEL, verbose=False)
             if xv.value is None:
                 lo = lam; continue
             sc = _np.where(_np.diff(_np.sign(_np.diff(xv.value))) != 0)[0] + 1
@@ -598,7 +600,7 @@ try:
             else:
                 lo = lam
         prob = cp.Problem(cp.Minimize(cp.sum_squares(closes - xv) + hi * cp.norm1(cp.diff(xv, 2))))
-        prob.solve(solver=cp.OSQP, verbose=False)
+        prob.solve(solver=cp.CLARABEL, verbose=False)
         if xv.value is not None:
             sc  = _np.where(_np.diff(_np.sign(_np.diff(xv.value))) != 0)[0] + 1
             idx = sorted(set([0] + list(sc) + [n - 1]))
@@ -608,9 +610,9 @@ try:
 
     _m4i = _l1_idx(_closes, n_segments)
     _methods.append(("4. L1 Trend Filter", True,
-                     _ts_mkt[_m4i], _closes[_m4i], "#a5d6a7"))
+                     _ts_mkt[_m4i], _closes[_m4i], "#a5d6a7", list(_m4i)))
 except ImportError:
-    _methods.append(("4. L1 Trend Filter", False, None, None, "pip install cvxpy"))
+    _methods.append(("4. L1 Trend Filter", False, None, None, "pip install cvxpy", None))
 
 # ── 5. HMM → reduce to n_segments ──
 try:
@@ -625,26 +627,460 @@ try:
     _m5i  = [0] + [i for i in range(1, len(_sts)) if _sts[i] != _sts[i - 1]] + [len(_closes) - 1]
     _m5i  = _reduce_to_n(sorted(set(_m5i)), _closes, n_segments)
     _methods.append(("5. HMM  (3-state → reduced)", True,
-                     _ts_mkt[_m5i], _closes[_m5i], "#fff176"))
+                     _ts_mkt[_m5i], _closes[_m5i], "#fff176", list(_m5i)))
 except ImportError:
     _methods.append(("5. HMM  (3-state → reduced)", False,
-                     None, None, "pip install hmmlearn"))
+                     None, None, "pip install hmmlearn", None))
 
-# Display in 3-row × 2-column grid
-for row in range(3):
-    _c1, _c2 = st.columns(2)
-    for col_i, _col in enumerate([_c1, _c2]):
-        _idx = row * 2 + col_i
-        if _idx >= len(_methods):
-            break
-        _title, _ok, _mx, _my, *_rest = _methods[_idx]
-        _color = _rest[0] if _ok else None
-        _err   = _rest[0] if not _ok else None
-        with _col:
-            if _ok:
-                st.plotly_chart(_comp_chart(_title, _mx, _my, _color),
-                                width="stretch", key=f"cmp_{_idx}")
+@st.cache_data(show_spinner=False)
+def _run_backtest(_df, dates, n_seg):
+    """Loop every date × 6 models, return per-model aggregated metrics."""
+    from scipy.stats import linregress as _lr_bt
+    from scipy.signal import find_peaks as _fp_bt
+
+    _mkt_open  = pd.Timestamp("09:15").time()
+    _mkt_close = pd.Timestamp("15:30").time()
+
+    _model_keys = ["0. RDP", "1. Ruptures", "2. ZigZag", "3. DC", "4. L1", "5. HMM"]
+    _seg_lists   = {k: [] for k in _model_keys}
+    _count_lists = {k: [] for k in _model_keys}
+
+    for _d in dates:
+        _md = _df[_df["date"] == _d]
+        _md = _md[(_md["timestamp"].dt.time >= _mkt_open) &
+                  (_md["timestamp"].dt.time <= _mkt_close)]
+        if len(_md) < n_seg + 2:
+            continue
+        _cl = _md["close"].values.astype(float)
+        _hi = _md["high"].values.astype(float)
+        _lo = _md["low"].values.astype(float)
+        _ts = _md["timestamp"].values
+
+        _idx_map = {}
+
+        try:
+            _e = _epsilon_for_n_segments(_cl, n_seg)
+            _idx_map["0. RDP"] = list(_rdp_vertical(_cl, _e))
+        except Exception:
+            pass
+
+        try:
+            import ruptures as _rpt_bt
+            _bkps = _rpt_bt.Binseg(model="linear").fit(_cl.reshape(-1,1)).predict(
+                        n_bkps=min(n_seg - 1, len(_cl) - 2))
+            _idx_map["1. Ruptures"] = _reduce_to_n(
+                sorted(set([0] + [b - 1 for b in _bkps])), _cl, n_seg)
+        except Exception:
+            pass
+
+        try:
+            lo_z, hi_z = 0.0, float(_cl.max() - _cl.min()) + 1.0
+            for _ in range(60):
+                mid_z = (lo_z + hi_z) / 2
+                p_z, _ = _fp_bt(_cl,  prominence=mid_z)
+                t_z, _ = _fp_bt(-_cl, prominence=mid_z)
+                if len(p_z) + len(t_z) <= n_seg - 1:
+                    hi_z = mid_z
+                else:
+                    lo_z = mid_z
+            p_z, _ = _fp_bt(_cl,  prominence=hi_z)
+            t_z, _ = _fp_bt(-_cl, prominence=hi_z)
+            _idx_map["2. ZigZag"] = _reduce_to_n(
+                sorted(set([0] + list(p_z) + list(t_z) + [len(_cl)-1])), _cl, n_seg)
+        except Exception:
+            pass
+
+        try:
+            _idx_map["3. DC"] = _dc_idx(_cl, n_seg)
+        except Exception:
+            pass
+
+        try:
+            import cvxpy as _cp_bt
+            _n_bt = len(_cl)
+            _xv_bt = _cp_bt.Variable(_n_bt)
+            _lo_l, _hi_l = 0.0, float(_cl.max() - _cl.min()) * 200
+            for _ in range(20):
+                _lam = (_lo_l + _hi_l) / 2
+                _pb  = _cp_bt.Problem(_cp_bt.Minimize(
+                    _cp_bt.sum_squares(_cl - _xv_bt) + _lam * _cp_bt.norm1(_cp_bt.diff(_xv_bt, 2))))
+                _pb.solve(solver=_cp_bt.CLARABEL, verbose=False)
+                if _xv_bt.value is None:
+                    _lo_l = _lam; continue
+                _sc_l = _np.where(_np.diff(_np.sign(_np.diff(_xv_bt.value))) != 0)[0] + 1
+                if len(_sc_l) <= n_seg - 1:
+                    _hi_l = _lam
+                else:
+                    _lo_l = _lam
+            _pb2 = _cp_bt.Problem(_cp_bt.Minimize(
+                _cp_bt.sum_squares(_cl - _xv_bt) + _hi_l * _cp_bt.norm1(_cp_bt.diff(_xv_bt, 2))))
+            _pb2.solve(solver=_cp_bt.CLARABEL, verbose=False)
+            if _xv_bt.value is not None:
+                _sc_l = _np.where(_np.diff(_np.sign(_np.diff(_xv_bt.value))) != 0)[0] + 1
+                _idx_map["4. L1"] = _reduce_to_n(
+                    sorted(set([0] + list(_sc_l) + [_n_bt-1])), _cl, n_seg)
+        except Exception:
+            pass
+
+        try:
+            from hmmlearn import hmm as _hmm_bt
+            _ret_bt  = _np.diff(_cl) / (_cl[:-1] + 1e-8)
+            _feat_bt = _np.column_stack([_ret_bt, _np.abs(_ret_bt)])
+            _hm_bt   = _hmm_bt.GaussianHMM(n_components=3, covariance_type="diag",
+                                            n_iter=100, random_state=42, min_covar=1e-3)
+            _hm_bt.fit(_feat_bt)
+            _sts_bt  = _hm_bt.predict(_feat_bt)
+            _m5_bt   = [0] + [i for i in range(1, len(_sts_bt)) if _sts_bt[i] != _sts_bt[i-1]] + [len(_cl)-1]
+            _idx_map["5. HMM"] = _reduce_to_n(sorted(set(_m5_bt)), _cl, n_seg)
+        except Exception:
+            pass
+
+        for _mname, _midx in _idx_map.items():
+            _count_lists[_mname].append(len(_midx) - 1)
+            for _k in range(len(_midx) - 1):
+                _si, _ei = _midx[_k], _midx[_k + 1]
+                _sc  = _cl[_si:_ei + 1]
+                _sh  = _hi[_si + 1:_ei + 1]
+                _sl  = _lo[_si + 1:_ei + 1]
+                _sts = _ts[_si:_ei + 1]
+
+                _t0  = pd.Timestamp(_sts[0])
+                _t1  = pd.Timestamp(_sts[-1])
+                _dur = (_t1 - _t0).total_seconds() / 60
+                _net = float(_sc[-1]) - float(_sc[0])
+                _pth = float(sum(abs(_sc[j+1] - _sc[j]) for j in range(len(_sc)-1)))
+                _dsp = abs(_net)
+                _er  = abs(_net) / _pth if _pth > 0 else 1.0
+                _rvol = float(_np.std(_np.diff(_sc) / (_sc[:-1] + 1e-8)) * 100) if len(_sc) > 1 else 0.0
+
+                _op = float(_sc[0])
+                if len(_sh) == 0:
+                    _mfe_bt = _mae_bt = 0.0
+                elif _net >= 0:
+                    _mfe_bt = float(_np.max(_sh)) - _op
+                    _mae_bt = _op - float(_np.min(_sl))
+                else:
+                    _mfe_bt = _op - float(_np.min(_sl))
+                    _mae_bt = float(_np.max(_sh)) - _op
+
+                if len(_sc) >= 3:
+                    _slp_bt, _, _, _, _se_bt = _lr_bt(_np.arange(len(_sc)), _sc)
+                    _tstat_bt = abs(float(_slp_bt / _se_bt)) if _se_bt > 0 else 0.0
+                else:
+                    _tstat_bt = 0.0
+
+                _capture = _dsp / _mfe_bt if _mfe_bt > 0 else 1.0
+                _pain    = _mae_bt / _dsp  if _dsp  > 0 else 0.0
+
+                _seg_lists[_mname].append({
+                    "er": _er, "slope_t": _tstat_bt,
+                    "capture": min(_capture, 1.0), "pain": _pain, "rvol": _rvol,
+                })
+
+    _agg = {}
+    for _mname in _model_keys:
+        _segs = _seg_lists[_mname]
+        if not _segs:
+            continue
+        _counts = _count_lists[_mname]
+        _agg[_mname] = {
+            "mean_er":      round(float(_np.mean([s["er"]      for s in _segs])), 3),
+            "mean_slope_t": round(float(_np.mean([s["slope_t"] for s in _segs])), 2),
+            "mean_capture": round(float(_np.mean([s["capture"] for s in _segs])), 3),
+            "mean_pain":    round(float(_np.mean([s["pain"]    for s in _segs])), 3),
+            "mean_rvol":    round(float(_np.mean([s["rvol"]    for s in _segs])), 4),
+            "seg_std":      round(float(_np.std(_counts)), 2),
+            "n_days":       len(_counts),
+        }
+    return _agg
+
+
+with _tab1:
+    st.subheader("Method Comparison  (same day, same slider)")
+    for row in range(3):
+        _c1, _c2 = st.columns(2)
+        for col_i, _col in enumerate([_c1, _c2]):
+            _idx = row * 2 + col_i
+            if _idx >= len(_methods):
+                break
+            _title, _ok, _mx, _my, _color, _ridx = _methods[_idx]
+            with _col:
+                if _ok:
+                    st.plotly_chart(_comp_chart(_title, _mx, _my, _color),
+                                    width="stretch", key=f"cmp_{_idx}")
+                else:
+                    st.markdown(f"**{_title}**")
+                    st.warning(f"Not available — {_color}")
+
+with _tab2:
+    from scipy.stats import linregress as _linreg
+
+    _model_names = [m[0] for m in _methods]
+    _sel_model   = st.selectbox("Select Model", _model_names, key="tab2_model")
+    _sel_m       = _methods[_model_names.index(_sel_model)]
+    _t2, _ok2, _mx2, _my2, _color2, _ridx2 = _sel_m
+
+    if not _ok2 or _ridx2 is None or len(_ridx2) < 2:
+        st.warning("Model not available or has fewer than 2 points.")
+    else:
+        # ── Chart with segment labels ──
+        _fig2 = go.Figure(go.Candlestick(
+            x=day_data["timestamp"],
+            open=day_data["open"], high=day_data["high"],
+            low=day_data["low"],  close=day_data["close"],
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+            name="NIFTY Spot",
+        ))
+        if prev_row is not None:
+            _fig2.add_hline(y=float(prev_row["close"]), line_dash="dash",
+                            line_color="#ffa726", line_width=1)
+        _fig2.add_trace(go.Scatter(
+            x=_ts_mkt[_ridx2], y=_closes[_ridx2],
+            mode="lines+markers",
+            line=dict(color=_color2, width=2),
+            marker=dict(size=7, color=_color2),
+            name="Path",
+        ))
+
+        _lx2, _ly2, _lt2, _lh2 = [], [], [], []
+        for _k2 in range(len(_ridx2) - 1):
+            _si2, _ei2 = _ridx2[_k2], _ridx2[_k2 + 1]
+            _tmid2 = (pd.Timestamp(_ts_mkt[_si2])
+                      + (pd.Timestamp(_ts_mkt[_ei2]) - pd.Timestamp(_ts_mkt[_si2])) / 2)
+            _pmid2 = (_closes[_si2] + _closes[_ei2]) / 2
+            _net2  = float(_closes[_ei2]) - float(_closes[_si2])
+            _lx2.append(_tmid2)
+            _ly2.append(_pmid2)
+            _lt2.append(str(_k2 + 1))
+            _lh2.append(
+                f"<b>Seg {_k2+1}</b>  "
+                f"{pd.Timestamp(_ts_mkt[_si2]).strftime('%H:%M')} → "
+                f"{pd.Timestamp(_ts_mkt[_ei2]).strftime('%H:%M')}<br>"
+                f"Dir: {'↑' if _net2 > 0 else '↓'}  |  Net: {_net2:+.2f} pts"
+            )
+        _fig2.add_trace(go.Scatter(
+            x=_lx2, y=_ly2,
+            mode="markers+text",
+            marker=dict(size=22, color="rgba(255,255,255,0.12)", symbol="circle",
+                        line=dict(color=_color2, width=1)),
+            text=_lt2,
+            textfont=dict(color=_color2, size=10, family="monospace"),
+            textposition="middle center",
+            hovertext=_lh2,
+            hoverinfo="text",
+            showlegend=False,
+            name="Segments",
+        ))
+        _fig2.update_layout(
+            xaxis_rangeslider_visible=False,
+            height=420, template="plotly_dark",
+            margin=dict(l=0, r=0, t=36, b=0),
+            title=dict(text=_t2, font=dict(size=13)),
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=False, automargin=True),
+        )
+        st.plotly_chart(_fig2, width="stretch", key="tab2_chart")
+
+        # ── Feature table ──
+        _feat_rows = []
+        for _k2 in range(len(_ridx2) - 1):
+            _si2, _ei2 = _ridx2[_k2], _ridx2[_k2 + 1]
+            _sc  = _closes[_si2:_ei2 + 1]
+            # skip first candle: its high/low happened before close[si] (our entry)
+            _sh  = _highs_mkt[_si2 + 1:_ei2 + 1]
+            _sl  = _lows_mkt[_si2 + 1:_ei2 + 1]
+            _sts = _ts_mkt[_si2:_ei2 + 1]
+
+            _t0  = pd.Timestamp(_sts[0])
+            _t1  = pd.Timestamp(_sts[-1])
+            _dur = (_t1 - _t0).total_seconds() / 60
+            _net = float(_sc[-1]) - float(_sc[0])
+            _pth = float(sum(abs(_sc[j + 1] - _sc[j]) for j in range(len(_sc) - 1)))
+            _dsp = abs(_net)
+            _spd = _net / _dur if _dur > 0 else 0.0
+            _er  = abs(_net) / _pth if _pth > 0 else 1.0
+
+            _rvol = float(_np.std(_np.diff(_sc) / (_sc[:-1] + 1e-8)) * 100) if len(_sc) > 1 else 0.0
+
+            _op = float(_sc[0])
+            if len(_sh) == 0:
+                _mfe = _mae = 0.0
+            elif _net >= 0:
+                _mfe = float(_np.max(_sh)) - _op
+                _mae = _op - float(_np.min(_sl))
             else:
-                st.markdown(f"**{_title}**")
-                st.warning(f"Not available — {_err}")
+                _mfe = _op - float(_np.min(_sl))
+                _mae = float(_np.max(_sh)) - _op
 
+            if len(_sc) >= 3:
+                _slp, _, _, _, _se = _linreg(_np.arange(len(_sc)), _sc)
+                _tstat = float(_slp / _se) if _se > 0 else 0.0
+            else:
+                _tstat = 0.0
+
+            _hr  = _t0.hour
+            _tod = "Morning" if _hr < 11 else ("Midday" if _hr < 13 else "Afternoon")
+
+            _feat_rows.append({
+                "Seg":          _k2 + 1,
+                "From":         _t0.strftime("%H:%M"),
+                "To":           _t1.strftime("%H:%M"),
+                "ToD":          _tod,
+                "Dir":          "↑" if _net > 0 else "↓",
+                "Disp (pts)":   round(_dsp, 2),
+                "Speed (pt/m)": round(_spd, 3),
+                "Path (pts)":   round(_pth, 2),
+                "ER":           round(_er, 3),
+                "Slope t":      round(_tstat, 2),
+                "RVol (%)":     round(_rvol, 4),
+                "MFE (pts)":    round(_mfe, 2),
+                "MAE (pts)":    round(_mae, 2),
+            })
+
+        _df_feat = pd.DataFrame(_feat_rows)
+
+        def _er_color(val):
+            g = int(min(max(val, 0.0), 1.0) * 200)
+            return f"background-color: rgb({200 - g},{g + 55},80); color: black"
+
+        st.dataframe(
+            _df_feat.style.map(_er_color, subset=["ER"]),
+            width="stretch",
+            hide_index=True,
+        )
+
+with _tab3:
+    st.subheader("Model Backtest Scorecard")
+    st.caption(
+        f"All 6 models  ·  {len(filtered_dates)} days  ·  "
+        f"{n_segments} segments  ·  Day filter: {day_type}"
+    )
+
+    st.markdown("**Scoring weights** — adjust to match your trading style")
+    _wc = st.columns(5)
+    _w_er   = _wc[0].slider("ER",        0.0, 1.0, 0.30, 0.05, key="w_er",
+                             help="Higher ER = cleaner, more efficient segments")
+    _w_slp  = _wc[1].slider("|Slope t|", 0.0, 1.0, 0.25, 0.05, key="w_slp",
+                             help="Higher = statistically stronger trends")
+    _w_cap  = _wc[2].slider("Capture",   0.0, 1.0, 0.20, 0.05, key="w_cap",
+                             help="Disp÷MFE — closer to 1 = segment ends near its peak")
+    _w_pain = _wc[3].slider("Pain ↓",    0.0, 1.0, 0.15, 0.05, key="w_pain",
+                             help="MAE÷Disp — lower = less drawdown vs net move (inverted: lower is better)")
+    _w_rvol = _wc[4].slider("RVol ↓",    0.0, 1.0, 0.10, 0.05, key="w_rvol",
+                             help="Tick-to-tick volatility — lower = smoother segments (inverted: lower is better)")
+
+    if st.button(f"▶  Run Backtest  ({len(filtered_dates)} days)", key="bt_run"):
+        with st.spinner("Computing all 6 models across all days…  (L1 may take a minute)"):
+            _bt_agg = _run_backtest(df, tuple(filtered_dates), n_segments)
+            st.session_state["bt_agg"]      = _bt_agg
+            st.session_state["bt_day_type"] = day_type
+            st.session_state["bt_n_seg"]    = n_segments
+
+    if "bt_agg" in st.session_state:
+        _bt = st.session_state["bt_agg"]
+
+        if not _bt:
+            st.warning("No results — not enough data for the current filter.")
+        else:
+            # ── Weighted scorecard ──────────────────────────────────────────
+            _all_er   = [v["mean_er"]      for v in _bt.values()]
+            _all_slp  = [v["mean_slope_t"] for v in _bt.values()]
+            _all_cap  = [v["mean_capture"] for v in _bt.values()]
+            _all_pain = [v["mean_pain"]    for v in _bt.values()]
+            _all_rvol = [v["mean_rvol"]    for v in _bt.values()]
+
+            def _norm01(val, vals, invert=False):
+                mn, mx = min(vals), max(vals)
+                if mx == mn:
+                    return 0.5
+                n = (val - mn) / (mx - mn)
+                return 1.0 - n if invert else n
+
+            _score_rows = []
+            for _mname, _v in _bt.items():
+                _s = (
+                    _w_er   * _norm01(_v["mean_er"],      _all_er)            +
+                    _w_slp  * _norm01(_v["mean_slope_t"], _all_slp)           +
+                    _w_cap  * _norm01(_v["mean_capture"], _all_cap)           +
+                    _w_pain * _norm01(_v["mean_pain"],    _all_pain, True)    +
+                    _w_rvol * _norm01(_v["mean_rvol"],    _all_rvol, True)
+                )
+                _score_rows.append({
+                    "Model":     _mname,
+                    "Days":      _v["n_days"],
+                    "Mean ER":   _v["mean_er"],
+                    "|Slope t|": _v["mean_slope_t"],
+                    "Capture":   _v["mean_capture"],
+                    "Pain":      _v["mean_pain"],
+                    "RVol (%)":  _v["mean_rvol"],
+                    "Seg σ":     _v["seg_std"],
+                    "Score":     round(_s, 3),
+                })
+
+            _df_score = (pd.DataFrame(_score_rows)
+                         .sort_values("Score", ascending=False)
+                         .reset_index(drop=True))
+
+            _max_score = _df_score["Score"].max()
+
+            def _score_color(val):
+                g = int(min(val / (_max_score + 1e-9), 1.0) * 200)
+                return f"background-color: rgb({200-g},{g+55},80); color: black"
+
+            st.dataframe(
+                _df_score.style.map(_score_color, subset=["Score"]),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.caption(
+                f"Backtest run on: {st.session_state.get('bt_day_type','—')}  ·  "
+                f"{st.session_state.get('bt_n_seg','—')} segments  ·  "
+                "Re-run button to refresh after changing sidebar filters."
+            )
+
+            # ── Per-metric bar charts (2-column grid) ───────────────────────
+            st.markdown("**Per-metric breakdown**")
+            _models_sorted = _df_score["Model"].tolist()
+
+            def _bar_chart(title, values, lower_better):
+                _color = "#ef5350" if lower_better else "#26a69a"
+                _bf = go.Figure(go.Bar(
+                    x=_models_sorted,
+                    y=values,
+                    marker_color=_color,
+                    text=[f"{v:.3f}" for v in values],
+                    textposition="outside",
+                ))
+                _bf.update_layout(
+                    title=dict(
+                        text=f"{title}  ({'↓ lower better' if lower_better else '↑ higher better'})",
+                        font=dict(size=11)),
+                    height=230, template="plotly_dark",
+                    margin=dict(l=0, r=0, t=36, b=0),
+                    xaxis=dict(showgrid=False, tickfont=dict(size=9)),
+                    yaxis=dict(showgrid=False),
+                    showlegend=False,
+                )
+                return _bf
+
+            _sorted_vals = lambda col: [
+                _df_score.loc[_df_score["Model"] == m, col].values[0]
+                for m in _models_sorted
+            ]
+
+            _charts = [
+                ("Mean ER",    "Mean ER",   False),
+                ("|Slope t|",  "|Slope t|", False),
+                ("Capture",    "Capture",   False),
+                ("Pain",       "Pain",      True),
+                ("RVol (%)",   "RVol (%)",  True),
+            ]
+
+            for i in range(0, len(_charts), 2):
+                _bc1, _bc2 = st.columns(2)
+                for _col, (_ctitle, _ckey, _inv) in zip([_bc1, _bc2], _charts[i:i+2]):
+                    _col.plotly_chart(
+                        _bar_chart(_ctitle, _sorted_vals(_ckey), _inv),
+                        width="stretch", key=f"bt_bar_{_ckey}",
+                    )

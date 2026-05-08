@@ -849,14 +849,21 @@ _methods.append(("0. RDP  (current model)", True,
 # ── 1. Ruptures — Binseg linear ──
 try:
     import ruptures as rpt
-    _sig  = _closes.reshape(-1, 1)
-    _bkps = rpt.Binseg(model="linear").fit(_sig).predict(n_bkps=min(n_segments - 1, len(_closes) - 2))
+    _sig     = _closes.reshape(-1, 1)
+    # Binseg needs ≥2 samples per segment → max breakpoints = (n-2)//2
+    _max_bkps = max(1, (len(_closes) - 2) // 2)
+    _bkps = rpt.Binseg(model="linear").fit(_sig).predict(
+        n_bkps=min(n_segments - 1, _max_bkps)
+    )
     _m1i  = sorted(set([0] + [b - 1 for b in _bkps]))
     _methods.append(("1. Ruptures  (Binseg · linear)", True,
                      _ts_mkt[_m1i], _closes[_m1i], "#64b5f6", list(_m1i)))
 except ImportError:
     _methods.append(("1. Ruptures  (Binseg · linear)", False,
                      None, None, "pip install ruptures", None))
+except Exception:
+    _methods.append(("1. Ruptures  (Binseg · linear)", False,
+                     None, None, "ruptures error", None))
 
 # ── 2. ZigZag + ATR ──
 try:

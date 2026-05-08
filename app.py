@@ -13,8 +13,9 @@ st.set_page_config(
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("Data/NiftySpotPrice.csv", parse_dates=["timestamp"])
-    df["ExpiryDate"] = pd.to_datetime(df["ExpiryDate"]).dt.date
+    df = pd.read_csv("Data/NiftySpotPrice.csv")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%d-%m-%Y %H:%M:%S")
+    df["ExpiryDate"] = pd.to_datetime(df["ExpiryDate"], format="%d-%m-%Y", errors="coerce").dt.date
     df.sort_values("timestamp", inplace=True)
     df.reset_index(drop=True, inplace=True)
     df["date"] = df["timestamp"].dt.date
@@ -22,9 +23,11 @@ def load_data():
 
 
 @st.cache_data
-def build_daily(df):
+def build_daily(df, open_time_str="9:15"):
+    _open_t = pd.Timestamp("09:16").time() if open_time_str == "9:16" else pd.Timestamp("09:15").time()
+    _df = df[df["timestamp"].dt.time >= _open_t] if open_time_str != "9:15" else df
     return (
-        df.groupby("date")
+        _df.groupby("date")
         .agg(
             open=("open", "first"),
             high=("high", "max"),
@@ -90,6 +93,15 @@ with st.sidebar:
     n_segments = st.slider("📌 Line Segments", min_value=2, max_value=20, value=8, step=1,
                            help="Fixed number of segments drawn each day — consistent across all days")
 
+    st.divider()
+    open_time_opt = st.selectbox(
+        "3️⃣  Opening Candle",
+        ["9:15", "9:16"],
+        help="Reference candle for Open price, gap calc, and all chart start times",
+    )
+
+chart_daily = build_daily(df, open_time_opt)
+
 # ── Derived values ─────────────────────────────────────────────────────────────
 
 idx = all_dates.index(selected_date)
@@ -98,7 +110,7 @@ prev_date = all_dates[idx - 1] if idx > 0 else None
 prev_row  = daily.iloc[idx - 1] if idx > 0 else None
 day_data = df[df["date"] == selected_date]
 
-_market_open  = pd.Timestamp("09:15").time()
+_market_open  = pd.Timestamp("09:16").time() if open_time_opt == "9:16" else pd.Timestamp("09:15").time()
 _market_close = pd.Timestamp("15:30").time()
 _market_data = day_data[
     (day_data["timestamp"].dt.time >= _market_open) &
@@ -106,16 +118,20 @@ _market_data = day_data[
 ]
 expiry_tag = expiry_map.get(selected_date, "Other")
 
+open_price = float(_market_data["open"].iloc[0]) if len(_market_data) > 0 else float(day_row["open"])
+
 if prev_row is not None:
-    gap_pts = round(float(day_row["open"]) - float(prev_row["close"]), 2)
+    gap_pts = round(open_price - float(prev_row["close"]), 2)
     gap_pct = round(gap_pts / float(prev_row["close"]) * 100, 2)
-    gap_label = "Gap Up ▲" if gap_pts > 0 else ("Gap Down ▼" if gap_pts < 0 else "Flat Open")
+    gap_arrow = "▲" if gap_pts > 0 else ("▼" if gap_pts < 0 else "—")
+    gap_label = "Gap Up" if gap_pts > 0 else ("Gap Down" if gap_pts < 0 else "Flat")
 else:
     gap_pts = gap_pct = 0
-    gap_label = "Gap"
+    gap_arrow = "—"
+    gap_label = "Flat"
 
-day_pts = round(float(day_row["close"]) - float(day_row["open"]), 2)
-day_pct = round(day_pts / float(day_row["open"]) * 100, 2)
+day_pts = round(float(day_row["close"]) - open_price, 2)
+day_pct = round(day_pts / open_price * 100, 2)
 
 # ── Header ─────────────────────────────────────────────────────────────────────
 
@@ -140,7 +156,11 @@ with c1:
     )
 
 with c2:
-    st.metric("Open", f"{day_row['open']:,.2f}")
+    st.metric(
+        f"Open  {gap_arrow} {gap_label}",
+        f"{open_price:,.2f}",
+        delta=f"{gap_pts:+.2f} pts  ({gap_pct:+.2f}%)" if prev_row is not None else None,
+    )
 
 with c3:
     st.metric("High", f"{day_row['high']:,.2f}")
@@ -157,12 +177,7 @@ with c5:
 
 with c6:
     if prev_row is not None:
-        gap_dir = "Gap Up ▲" if gap_pts > 0 else ("Gap Down ▼" if gap_pts < 0 else "Flat Open")
-        st.metric(
-            f"Prev Close  ({gap_dir})",
-            f"{prev_row['close']:,.2f}",
-            delta=f"{gap_pts:+.2f} pts  ({gap_pct:+.2f}%)",
-        )
+        st.metric("Prev Close", f"{prev_row['close']:,.2f}")
     else:
         st.metric("Prev Close", "—")
 
@@ -179,8 +194,6 @@ sel_ts = pd.Timestamp(selected_date)
 def get_period_dates(label: str) -> list:
     if label == "1 Day":
         return past[-1:] if past else []
-    if label == "5 Days":
-        return past[-5:] if len(past) >= 5 else past
     if label == "1 Week":
         cutoff = (sel_ts - pd.Timedelta(weeks=1)).date()
         return [d for d in past if d >= cutoff]
@@ -190,9 +203,9 @@ def get_period_dates(label: str) -> list:
     return []
 
 
-cols = st.columns(4)
+cols = st.columns(3)
 
-for col, label in zip(cols, ["1 Day", "5 Days", "1 Week", "1 Month"]):
+for col, label in zip(cols, ["1 Day", "1 Week", "1 Month"]):
     period_dates = get_period_dates(label)
 
     with col:
@@ -206,6 +219,7 @@ for col, label in zip(cols, ["1 Day", "5 Days", "1 Week", "1 Month"]):
             prev_day = period_dates[-1]
             raw = df[df["date"] == prev_day].copy()
             raw = raw.set_index("timestamp")
+            raw = raw[raw.index.time >= _market_open]
             pdata = raw.resample("15min").agg(
                 open=("open", "first"),
                 high=("high", "max"),
@@ -217,7 +231,7 @@ for col, label in zip(cols, ["1 Day", "5 Days", "1 Week", "1 Month"]):
             x_vals  = pdata["timestamp"]
             caption = f"{prev_day.strftime('%d %b %Y')}  (15-min candles)"
         else:
-            pdata   = daily[daily["date"].isin(period_dates)].copy()
+            pdata   = chart_daily[chart_daily["date"].isin(period_dates)].copy()
             p_open  = float(pdata["open"].iloc[0])
             p_close = float(pdata["close"].iloc[-1])
             x_vals  = pdata["date"].astype(str)
@@ -269,11 +283,11 @@ st.subheader(f"Intraday 1-min Chart  —  [{expiry_tag}]")
 
 fig = go.Figure(
     go.Candlestick(
-        x=day_data["timestamp"],
-        open=day_data["open"],
-        high=day_data["high"],
-        low=day_data["low"],
-        close=day_data["close"],
+        x=_market_data["timestamp"],
+        open=_market_data["open"],
+        high=_market_data["high"],
+        low=_market_data["low"],
+        close=_market_data["close"],
         increasing_line_color="#26a69a",
         decreasing_line_color="#ef5350",
         name="NIFTY Spot",
@@ -299,7 +313,7 @@ fig.update_layout(
     xaxis=dict(
         title=None,
         automargin=True,
-        range=[day_data["timestamp"].iloc[0], day_data["timestamp"].iloc[-1] + pd.Timedelta(minutes=1)],
+        range=[_market_data["timestamp"].iloc[0], _market_data["timestamp"].iloc[-1] + pd.Timedelta(minutes=1)],
     ),
     yaxis=dict(title=None, side="left", automargin=True),
     legend=dict(
@@ -313,7 +327,7 @@ fig.update_layout(
     ),
 )
 
-# ── RDP price path ─────────────────────────────────────────────────────────────
+# ── Price path (DC segments) ───────────────────────────────────────────────────
 
 def _rdp_vertical(closes, epsilon):
     """Ramer-Douglas-Peucker on a 1-D price series using vertical distance."""
@@ -353,25 +367,111 @@ def _epsilon_for_n_segments(closes, target):
     return hi
 
 
+import numpy as _np
+
+
+def _reduce_to_n(idx, closes, target):
+    idx = list(idx)
+    while len(idx) - 1 > target and len(idx) >= 3:
+        min_dist, min_pos = float("inf"), None
+        for pos in range(1, len(idx) - 1):
+            pi, ci, ni = idx[pos - 1], idx[pos], idx[pos + 1]
+            t    = (ci - pi) / (ni - pi) if ni != pi else 0.5
+            dist = abs(float(closes[ci]) - (float(closes[pi]) + t * (float(closes[ni]) - float(closes[pi]))))
+            if dist < min_dist:
+                min_dist, min_pos = dist, pos
+        if min_pos is None:
+            break
+        idx.pop(min_pos)
+    return idx
+
+
+def _dc_run(closes, theta):
+    pts = [(0, float(closes[0]))]
+    ext, ext_i, direction = float(closes[0]), 0, None
+    for i in range(1, len(closes)):
+        p = float(closes[i])
+        if direction is None:
+            if (p - ext) / ext >= theta:
+                direction = "UP";   ext, ext_i = p, i
+            elif (ext - p) / ext >= theta:
+                direction = "DOWN"; ext, ext_i = p, i
+        elif direction == "UP":
+            if p > ext: ext, ext_i = p, i
+            elif (ext - p) / ext >= theta:
+                pts.append((ext_i, ext)); direction = "DOWN"; ext, ext_i = p, i
+        else:
+            if p < ext: ext, ext_i = p, i
+            elif (p - ext) / ext >= theta:
+                pts.append((ext_i, ext)); direction = "UP";   ext, ext_i = p, i
+    pts.append((len(closes) - 1, float(closes[-1])))
+    return pts
+
+
+def _dc_idx(closes, target):
+    lo, hi = 1e-6, 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if len(_dc_run(closes, mid)) - 1 <= target:
+            hi = mid
+        else:
+            lo = mid
+    pts = _dc_run(closes, hi)
+    idx = [p[0] for p in pts]
+    return _reduce_to_n(idx, closes, target)
+
+
 _closes  = _market_data["close"].values.astype(float)
+_closes[0] = open_price  # anchor first point to opening candle's open, not its close
 _ts_mkt  = _market_data["timestamp"].values
 _eps     = _epsilon_for_n_segments(_closes, n_segments)
 _rdp_idx   = _rdp_vertical(_closes, _eps)
+_main_idx  = _dc_idx(_closes, n_segments)   # DC segments for main chart
 _highs_mkt = _market_data["high"].values.astype(float)
 _lows_mkt  = _market_data["low"].values.astype(float)
 
+# ── Day-level summary stats (model-independent) ────────────────────────────────
+_day_close_val = float(_market_data["close"].iloc[-1])
+_day_net       = _day_close_val - open_price
+_day_dir       = "Up" if _day_net >= 0 else "Down"
+_day_disp      = abs(_day_net)
+_day_mins      = (pd.Timestamp(_ts_mkt[-1]) - pd.Timestamp(_ts_mkt[0])).total_seconds() / 60
+_day_slope     = round(_day_net / _day_mins, 3) if _day_mins > 0 else 0.0
+if _day_net >= 0:
+    _day_mfe = round(float(_highs_mkt.max()) - open_price, 2)
+    _day_mae = round(open_price - float(_lows_mkt.min()), 2)
+else:
+    _day_mfe = round(open_price - float(_lows_mkt.min()), 2)
+    _day_mae = round(float(_highs_mkt.max()) - open_price, 2)
+
+def _day_summary_hover(path_len):
+    er = round(_day_disp / path_len, 3) if path_len > 0 else 1.0
+    return (
+        f"<b>Day Open → Close</b><br>"
+        f"Dir: {_day_dir}  ({_day_net:+.2f} pts)<br>"
+        f"Displacement: {_day_disp:.2f} pts<br>"
+        f"Path (seg sum): {path_len:.2f} pts<br>"
+        f"ER: {er:.3f}<br>"
+        f"Slope: {_day_slope:+.3f} pts/min<br>"
+        f"MFE: {_day_mfe:.2f} pts<br>"
+        f"MAE: {_day_mae:.2f} pts"
+    )
+
+_main_path = float(sum(abs(_closes[_main_idx[k+1]] - _closes[_main_idx[k]])
+                        for k in range(len(_main_idx) - 1)))
+
 fig.add_trace(go.Scatter(
-    x=_ts_mkt[_rdp_idx],
-    y=_closes[_rdp_idx],
+    x=_ts_mkt[_main_idx],
+    y=_closes[_main_idx],
     mode="lines+markers",
     line=dict(color="#f0c040", width=2),
     marker=dict(size=7, color="#f0c040", symbol="circle"),
-    name="Price Path",
+    name="Price Path (DC)",
 ))
 
 # Global high and low markers with price labels
-_gh = day_data.loc[day_data["high"].idxmax()]
-_gl = day_data.loc[day_data["low"].idxmin()]
+_gh = _market_data.loc[_market_data["high"].idxmax()]
+_gl = _market_data.loc[_market_data["low"].idxmin()]
 
 fig.add_trace(go.Scatter(
     x=[_gh["timestamp"]], y=[_gh["high"]],
@@ -396,8 +496,8 @@ fig.add_trace(go.Scatter(
 # ── Efficiency Ratio per segment (computed before chart render) ────────────────
 
 _er_rows = []
-for k in range(len(_rdp_idx) - 1):
-    si, ei = _rdp_idx[k], _rdp_idx[k + 1]
+for k in range(len(_main_idx) - 1):
+    si, ei = _main_idx[k], _main_idx[k + 1]
     seg  = _closes[si : ei + 1]
     net  = float(seg[-1]) - float(seg[0])
     path = float(sum(abs(seg[j + 1] - seg[j]) for j in range(len(seg) - 1)))
@@ -418,7 +518,7 @@ for k in range(len(_rdp_idx) - 1):
 if _er_rows:
     _lx, _ly, _lt, _lh = [], [], [], []
     for row in _er_rows:
-        si, ei = _rdp_idx[row["Seg"] - 1], _rdp_idx[row["Seg"]]
+        si, ei = _main_idx[row["Seg"] - 1], _main_idx[row["Seg"]]
         t_mid = pd.Timestamp(_ts_mkt[si]) + (pd.Timestamp(_ts_mkt[ei]) - pd.Timestamp(_ts_mkt[si])) / 2
         p_mid = (_closes[si] + _closes[ei]) / 2
         _lx.append(t_mid)
@@ -444,18 +544,256 @@ if _er_rows:
         name="Segments",
     ))
 
+_oc_hover = _day_summary_hover(_main_path)
+_t0_ts = pd.Timestamp(_ts_mkt[0])
+_t1_ts = pd.Timestamp(_ts_mkt[-1])
+_mid_ts = _t0_ts + (_t1_ts - _t0_ts) / 2
+_mid_y  = (open_price + _day_close_val) / 2
+
+fig.add_trace(go.Scatter(
+    x=[_t0_ts, _t1_ts],
+    y=[open_price, _day_close_val],
+    mode="lines",
+    line=dict(color="#00e5ff", width=2, dash="dot"),
+    name="Open → Close",
+    hoverinfo="skip",
+))
+fig.add_trace(go.Scatter(
+    x=[_t0_ts, _mid_ts, _t1_ts],
+    y=[open_price, _mid_y, _day_close_val],
+    mode="markers",
+    marker=dict(size=10, color="#00e5ff", symbol="diamond",
+                line=dict(color="#ffffff", width=1)),
+    name="Day Summary",
+    hovertext=[_oc_hover, _oc_hover, _oc_hover],
+    hoverinfo="text",
+))
+
 st.plotly_chart(fig, width="stretch")
+
+# ── 1-Week / 1-Month context charts ───────────────────────────────────────────
+
+def _build_context_chart(window_dates, title, height=360):
+    GAP_UP = "#00c853"
+    GAP_DN = "#f44336"
+    # Synthetic Mon–Fri anchor: each valid trading day gets its own weekday slot
+    # so all sessions get identical x-width via rangebreaks.
+    _SYN_BASE = pd.Timestamp("2000-01-03")  # Monday
+
+    def _syn_date(slot):
+        """Map slot index to a synthetic weekday (Mon–Fri cycling)."""
+        w, r = divmod(slot, 5)
+        return _SYN_BASE + pd.Timedelta(weeks=w, days=r)
+
+    def _to_syn(raw_ts, syn_d):
+        t = pd.Timestamp(raw_ts)
+        return syn_d + pd.Timedelta(hours=t.hour, minutes=t.minute, seconds=t.second)
+
+    cfig = go.Figure()
+    _open_t  = pd.Timestamp("09:16").time() if open_time_opt == "9:16" else pd.Timestamp("09:15").time()
+    _close_t = pd.Timestamp("15:30").time()
+    prev_close_ctx = None
+    prev_last_syn  = None   # synthetic ts of previous session's last candle
+    day_slot       = 0
+    tick_vals      = []
+    tick_text      = []
+
+    for d in window_dates:
+        day_mkt = df[df["date"] == d]
+        day_mkt = day_mkt[
+            (day_mkt["timestamp"].dt.time >= _open_t) &
+            (day_mkt["timestamp"].dt.time <= _close_t)
+        ]
+        if len(day_mkt) < 2:
+            # No data for this date — skip entirely, do not advance slot
+            prev_close_ctx = None
+            prev_last_syn  = None
+            continue
+
+        syn_d   = _syn_date(day_slot)
+        ts      = day_mkt["timestamp"].values
+        cl      = day_mkt["close"].values.astype(float)
+        hi      = day_mkt["high"].values.astype(float)
+        lo      = day_mkt["low"].values.astype(float)
+        d_open  = float(day_mkt["open"].iloc[0])
+        d_close = float(cl[-1])
+        cl_plot = cl.copy(); cl_plot[0] = d_open
+
+        is_sel  = (d == selected_date)
+
+        # ── Path: reuse main-chart precomputed values for selected day so
+        #    Path (DC) and ER are bit-identical to the main intraday chart.
+        if is_sel:
+            d_idx = _main_idx
+            path  = _main_path
+        else:
+            d_idx = _dc_idx(cl_plot, n_segments)
+            path  = float(sum(abs(cl_plot[d_idx[k+1]] - cl_plot[d_idx[k]])
+                              for k in range(len(d_idx) - 1)))
+
+        net   = d_close - d_open
+        disp  = abs(net)
+        mins  = (pd.Timestamp(ts[-1]) - pd.Timestamp(ts[0])).total_seconds() / 60
+        er    = round(disp / path, 3) if path > 0 else 1.0
+        slope = round(net / mins, 3) if mins > 0 else 0.0
+        if net >= 0:
+            mfe = round(float(hi.max()) - d_open, 2)
+            mae = round(d_open - float(lo.min()), 2)
+        else:
+            mfe = round(d_open - float(lo.min()), 2)
+            mae = round(float(hi.max()) - d_open, 2)
+
+        lw_dc   = 1.8 if is_sel else 1.2
+        lw_oc   = 1.5 if is_sel else 0.9
+        mk_sz   = 6   if is_sel else 4
+        hl_sz   = 10  if is_sel else 7
+        day_lbl = d.strftime("%d %b") + (" ★" if is_sel else "")
+
+        hover_txt = (
+            f"<b>{d.strftime('%d %b %Y')}{' ★' if is_sel else ''}</b><br>"
+            f"Dir: {'Up ▲' if net >= 0 else 'Down ▼'}  ({net:+.2f} pts)<br>"
+            f"Open: {d_open:.2f}  →  Close: {d_close:.2f}<br>"
+            f"Displacement: {disp:.2f} pts<br>"
+            f"Path (DC): {path:.2f} pts<br>"
+            f"ER: {er:.3f}<br>"
+            f"Slope: {slope:+.3f} pts/min<br>"
+            f"MFE: {mfe:.2f} pts<br>"
+            f"MAE: {mae:.2f} pts"
+        )
+
+        # Map all timestamps to synthetic x-axis
+        ts_syn = [_to_syn(t, syn_d) for t in ts]
+        t0c    = ts_syn[0]
+        t1c    = ts_syn[-1]
+        tick_vals.append(syn_d + pd.Timedelta(hours=12))
+        tick_text.append(d.strftime("%d %b"))
+
+        # ── After-market gap visualisation ─────────────────────────────────────
+        if prev_close_ctx is not None and prev_last_syn is not None:
+            gap = d_open - prev_close_ctx
+            if abs(gap) > 0.05:
+                gc      = GAP_UP if gap > 0 else GAP_DN
+                gc_fill = "rgba(0,200,83,0.18)" if gap > 0 else "rgba(244,67,54,0.18)"
+                gt = (f"<b>Gap {'Up ▲' if gap > 0 else 'Down ▼'}</b><br>"
+                      f"{gap:+.2f} pts  |  prev close {prev_close_ctx:.2f} → open {d_open:.2f}")
+                cfig.add_shape(
+                    type="rect", xref="x", yref="y",
+                    x0=prev_last_syn, x1=t0c,
+                    y0=min(prev_close_ctx, d_open),
+                    y1=max(prev_close_ctx, d_open),
+                    fillcolor=gc_fill, line=dict(width=0), layer="below",
+                )
+                cfig.add_trace(go.Scatter(
+                    x=[t0c, t0c], y=[prev_close_ctx, d_open],
+                    mode="lines",
+                    line=dict(color=gc, width=2, dash="dash"),
+                    showlegend=False, hoverinfo="skip", legendgroup=day_lbl,
+                ))
+                cfig.add_trace(go.Scatter(
+                    x=[t0c], y=[d_open],
+                    mode="markers",
+                    marker=dict(size=13, color=gc,
+                                symbol="triangle-up" if gap > 0 else "triangle-down",
+                                line=dict(color="#ffffff", width=1)),
+                    hovertext=[gt], hoverinfo="text",
+                    showlegend=False, legendgroup=day_lbl,
+                ))
+
+        # ── Raw intraday close line (background, green/red) ────────────────────
+        line_color = "#26a69a" if net >= 0 else "#ef5350"
+        cfig.add_trace(go.Scatter(
+            x=ts_syn,
+            y=cl_plot,
+            mode="lines",
+            line=dict(color=line_color, width=1.2 if is_sel else 0.7),
+            opacity=0.45,
+            showlegend=False, legendgroup=day_lbl, hoverinfo="skip",
+        ))
+
+        # ── DC segment line (gold) ──────────────────────────────────────────────
+        cfig.add_trace(go.Scatter(
+            x=[ts_syn[i] for i in d_idx],
+            y=cl_plot[d_idx],
+            mode="lines+markers",
+            line=dict(color="#f0c040", width=lw_dc),
+            marker=dict(size=mk_sz, color="#f0c040", symbol="circle"),
+            name=day_lbl, legendgroup=day_lbl,
+            hovertext=[hover_txt] * len(d_idx),
+            hoverinfo="text",
+        ))
+
+        # ── Open→Close dotted line + diamond hover markers ──────────────────────
+        mid_tc = t0c + (t1c - t0c) / 2
+        mid_yc = (d_open + d_close) / 2
+        cfig.add_trace(go.Scatter(
+            x=[t0c, t1c], y=[d_open, d_close],
+            mode="lines",
+            line=dict(color="#00e5ff", width=lw_oc, dash="dot"),
+            showlegend=False, hoverinfo="skip", legendgroup=day_lbl,
+        ))
+        cfig.add_trace(go.Scatter(
+            x=[t0c, mid_tc, t1c], y=[d_open, mid_yc, d_close],
+            mode="markers",
+            marker=dict(size=6 if not is_sel else 9, color="#00e5ff",
+                        symbol="diamond", line=dict(color="#ffffff", width=1)),
+            hovertext=[hover_txt] * 3, hoverinfo="text",
+            showlegend=False, legendgroup=day_lbl,
+        ))
+
+        # Thin vertical separator between sessions
+        if prev_last_syn is not None:
+            cfig.add_shape(
+                type="line", xref="x", yref="paper",
+                x0=t0c, x1=t0c, y0=0, y1=1,
+                line=dict(color="rgba(255,255,255,0.15)", width=1, dash="dot"),
+            )
+
+        prev_close_ctx = d_close
+        prev_last_syn  = t1c
+        day_slot += 1
+
+    cfig.update_layout(
+        title=dict(text=title, font=dict(size=13)),
+        xaxis_rangeslider_visible=False,
+        height=height,
+        template="plotly_dark",
+        margin=dict(l=0, r=0, t=40, b=0),
+        xaxis=dict(
+            showgrid=False, title=None,
+            tickvals=tick_vals,
+            ticktext=tick_text,
+            tickfont=dict(size=9),
+            rangebreaks=[
+                dict(bounds=["sat", "mon"]),
+                dict(bounds=[15.55, 9.1], pattern="hour"),
+            ],
+        ),
+        yaxis=dict(showgrid=False, automargin=True, title=None),
+        hovermode="closest",
+        legend=dict(orientation="h", y=1.1, x=0,
+                    font=dict(size=9), bgcolor="rgba(0,0,0,0)"),
+    )
+    return cfig
+
+
+_ctx_week_dates  = (past[-4:] if len(past) >= 4 else past) + [selected_date]
+_ctx_month_dates = (past[-21:] if len(past) >= 21 else past) + [selected_date]
+
+st.subheader("1-Week Context")
+st.plotly_chart(_build_context_chart(_ctx_week_dates,  "1 Week  (5 days)"),  width="stretch", key="ctx_week")
+st.subheader("1-Month Context")
+st.plotly_chart(_build_context_chart(_ctx_month_dates, "1 Month  (~22 days)", height=420), width="stretch", key="ctx_month")
 
 # ── Tabs: Model Comparison + Segment Features ──────────────────────────────────
 
 st.divider()
 _tab1, _tab2, _tab3 = st.tabs(["📊 Model Comparison", "📐 Segment Features", "🏆 Model Backtest"])
 
-def _comp_chart(title, path_x, path_y, color):
+def _comp_chart(title, path_x, path_y, color, day_hover=""):
     cf = go.Figure(go.Candlestick(
-        x=day_data["timestamp"],
-        open=day_data["open"], high=day_data["high"],
-        low=day_data["low"],  close=day_data["close"],
+        x=_market_data["timestamp"],
+        open=_market_data["open"], high=_market_data["high"],
+        low=_market_data["low"],  close=_market_data["close"],
         increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
         showlegend=False,
     ))
@@ -469,6 +807,28 @@ def _comp_chart(title, path_x, path_y, color):
         marker=dict(size=5, color=color),
         showlegend=False,
     ))
+    _ct0 = pd.Timestamp(_ts_mkt[0])
+    _ct1 = pd.Timestamp(_ts_mkt[-1])
+    _cmid_ts = _ct0 + (_ct1 - _ct0) / 2
+    _cmid_y  = (open_price + _day_close_val) / 2
+    cf.add_trace(go.Scatter(
+        x=[_ct0, _ct1],
+        y=[open_price, _day_close_val],
+        mode="lines",
+        line=dict(color="#00e5ff", width=1.5, dash="dot"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    cf.add_trace(go.Scatter(
+        x=[_ct0, _cmid_ts, _ct1],
+        y=[open_price, _cmid_y, _day_close_val],
+        mode="markers",
+        marker=dict(size=7, color="#00e5ff", symbol="diamond",
+                    line=dict(color="#ffffff", width=1)),
+        hovertext=[day_hover, day_hover, day_hover],
+        hoverinfo="text",
+        showlegend=False,
+    ))
     cf.update_layout(
         title=dict(text=title, font=dict(size=12)),
         xaxis_rangeslider_visible=False,
@@ -478,25 +838,6 @@ def _comp_chart(title, path_x, path_y, color):
         yaxis=dict(showgrid=False, automargin=True),
     )
     return cf
-
-
-import numpy as _np
-
-def _reduce_to_n(idx, closes, target):
-    """Greedily remove the least-significant interior point until len(idx)-1 == target."""
-    idx = list(idx)
-    while len(idx) - 1 > target and len(idx) >= 3:
-        min_dist, min_pos = float("inf"), None
-        for pos in range(1, len(idx) - 1):
-            pi, ci, ni = idx[pos - 1], idx[pos], idx[pos + 1]
-            t    = (ci - pi) / (ni - pi) if ni != pi else 0.5
-            dist = abs(float(closes[ci]) - (float(closes[pi]) + t * (float(closes[ni]) - float(closes[pi]))))
-            if dist < min_dist:
-                min_dist, min_pos = dist, pos
-        if min_pos is None:
-            break
-        idx.pop(min_pos)
-    return idx
 
 
 _methods = []
@@ -543,39 +884,6 @@ except Exception as e:
     _methods.append(("2. ZigZag + ATR", False, None, None, str(e), None))
 
 # ── 3. Directional Change (DC) ──
-def _dc_run(closes, theta):
-    pts = [(0, float(closes[0]))]
-    ext, ext_i, direction = float(closes[0]), 0, None
-    for i in range(1, len(closes)):
-        p = float(closes[i])
-        if direction is None:
-            if (p - ext) / ext >= theta:
-                direction = "UP";   ext, ext_i = p, i
-            elif (ext - p) / ext >= theta:
-                direction = "DOWN"; ext, ext_i = p, i
-        elif direction == "UP":
-            if p > ext: ext, ext_i = p, i
-            elif (ext - p) / ext >= theta:
-                pts.append((ext_i, ext)); direction = "DOWN"; ext, ext_i = p, i
-        else:
-            if p < ext: ext, ext_i = p, i
-            elif (p - ext) / ext >= theta:
-                pts.append((ext_i, ext)); direction = "UP";   ext, ext_i = p, i
-    pts.append((len(closes) - 1, float(closes[-1])))
-    return pts
-
-def _dc_idx(closes, target):
-    lo, hi = 1e-6, 1.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if len(_dc_run(closes, mid)) - 1 <= target:
-            hi = mid
-        else:
-            lo = mid
-    pts = _dc_run(closes, hi)
-    idx = [p[0] for p in pts]
-    return _reduce_to_n(idx, closes, target)
-
 _m3i = _dc_idx(_closes, n_segments)
 _methods.append(("3. Directional Change (DC)", True,
                  _ts_mkt[_m3i], _closes[_m3i], "#ff8a65", list(_m3i)))
@@ -633,12 +941,12 @@ except ImportError:
                      None, None, "pip install hmmlearn", None))
 
 @st.cache_data(show_spinner=False)
-def _run_backtest(_df, dates, n_seg):
+def _run_backtest(_df, dates, n_seg, open_time_str="9:15"):
     """Loop every date × 6 models, return per-model aggregated metrics."""
     from scipy.stats import linregress as _lr_bt
     from scipy.signal import find_peaks as _fp_bt
 
-    _mkt_open  = pd.Timestamp("09:15").time()
+    _mkt_open  = pd.Timestamp("09:16").time() if open_time_str == "9:16" else pd.Timestamp("09:15").time()
     _mkt_close = pd.Timestamp("15:30").time()
 
     _model_keys = ["0. RDP", "1. Ruptures", "2. ZigZag", "3. DC", "4. L1", "5. HMM"]
@@ -652,6 +960,7 @@ def _run_backtest(_df, dates, n_seg):
         if len(_md) < n_seg + 2:
             continue
         _cl = _md["close"].values.astype(float)
+        _cl[0] = float(_md["open"].iloc[0])  # anchor to opening candle's open
         _hi = _md["high"].values.astype(float)
         _lo = _md["low"].values.astype(float)
         _ts = _md["timestamp"].values
@@ -806,8 +1115,14 @@ with _tab1:
             _title, _ok, _mx, _my, _color, _ridx = _methods[_idx]
             with _col:
                 if _ok:
-                    st.plotly_chart(_comp_chart(_title, _mx, _my, _color),
-                                    width="stretch", key=f"cmp_{_idx}")
+                    _ridx_path = float(sum(
+                        abs(_closes[_ridx[k+1]] - _closes[_ridx[k]])
+                        for k in range(len(_ridx) - 1)
+                    )) if _ridx else 0.0
+                    st.plotly_chart(
+                        _comp_chart(_title, _mx, _my, _color, _day_summary_hover(_ridx_path)),
+                        width="stretch", key=f"cmp_{_idx}"
+                    )
                 else:
                     st.markdown(f"**{_title}**")
                     st.warning(f"Not available — {_color}")
@@ -825,9 +1140,9 @@ with _tab2:
     else:
         # ── Chart with segment labels ──
         _fig2 = go.Figure(go.Candlestick(
-            x=day_data["timestamp"],
-            open=day_data["open"], high=day_data["high"],
-            low=day_data["low"],  close=day_data["close"],
+            x=_market_data["timestamp"],
+            open=_market_data["open"], high=_market_data["high"],
+            low=_market_data["low"],  close=_market_data["close"],
             increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
             name="NIFTY Spot",
         ))
@@ -971,7 +1286,7 @@ with _tab3:
 
     if st.button(f"▶  Run Backtest  ({len(filtered_dates)} days)", key="bt_run"):
         with st.spinner("Computing all 6 models across all days…  (L1 may take a minute)"):
-            _bt_agg = _run_backtest(df, tuple(filtered_dates), n_segments)
+            _bt_agg = _run_backtest(df, tuple(filtered_dates), n_segments, open_time_opt)
             st.session_state["bt_agg"]      = _bt_agg
             st.session_state["bt_day_type"] = day_type
             st.session_state["bt_n_seg"]    = n_segments
